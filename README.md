@@ -1,112 +1,99 @@
 # DefectTrack
 
-Real-time multi-object tracking of defect clusters in in-situ TEM videos.
+Code and pretrained model for **DefectTrack**, a multi-object tracker for defect
+clusters in in-situ irradiation TEM videos.
 
-DefectTrack detects defect clusters in every frame and links them across
-frames, giving each defect a stable ID. It uses an HRNet-18 backbone with a
-FairMOT-style joint detection and re-identification head, followed by a
-Kalman-filter tracker.
+[Paper](https://doi.org/10.1038/s41598-022-19697-1) | [Citation](#citation) | [Related: DefectSegNet](https://github.com/rajatsainju2025/DefectSegNet)
 
-> **Paper:** R. Sainju *et al.*, "DefectTrack: a deep learning-based
-> multi-object tracking algorithm for quantitative defect analysis of in-situ
-> TEM videos in real-time," *Scientific Reports* **12**, 15705 (2022).
-> [doi:10.1038/s41598-022-19697-1](https://doi.org/10.1038/s41598-022-19697-1)
+<p align="center">
+  <img src="assets/tracking_results.jpg" width="85%">
+</p>
 
-## Quick start
+During in-situ ion irradiation, defect clusters appear, move and disappear within
+milliseconds. Measuring how long each one survives means following hundreds of
+small, low-contrast objects through thousands of frames, which is slow and
+inconsistent by hand. DefectTrack detects every cluster in each frame and links
+the detections over time, so each defect keeps one ID for its whole lifetime.
+On the test set (1 MeV Kr²⁺ irradiation of Ni at 700 °C) it reaches a MOTA of
+66.43% and an MT of 67.81%. When measuring defect lifetime distributions, it
+was both more accurate and faster than four human experts.
+
+*Above: tracked clusters in a 256 × 256 crop (a), three clusters with long,
+medium and short lifetimes (b), and the lifetimes of all tracked clusters (c).
+Fig. 6 in the paper.*
+
+## Model
+
+DefectTrack is a one-shot tracker in the style of FairMOT. An HRNet-18 backbone
+feeds two heads. One predicts each cluster's center, size and offset. The other
+produces a 128-d re-identification embedding. Tracks are then associated from
+frame to frame using the embeddings, a Kalman-filter motion model and box overlap.
+
+<p align="center">
+  <img src="assets/architecture.jpg" width="85%">
+</p>
+
+*(a) Overall pipeline, (b) tracking by detection and association, (c) HRNet
+backbone, (d) detection branch, (e) tracking module. Fig. 3 in the paper.*
+
+## Getting started
 
 ```bash
 git clone https://github.com/rajatsainju2025/DefectTrack.git
 cd DefectTrack
-pip install .                        # installs the `defecttrack` command
-python scripts/download_weights.py   # pretrained model -> weights/best.pth
+pip install .
+python scripts/download_weights.py      # -> weights/best.pth
 
 defecttrack data/video_sample/images --video
 ```
 
-Results are written to `results/video_sample/`:
+Results go to `results/<sequence>/`:
 
-| File | What it is |
-| --- | --- |
-| `results.txt` | One line per box: `frame,id,x,y,w,h,score,1,-1,-1,-1` (MOTChallenge format) |
-| `frames/*.png` | Frames with each tracked defect drawn and labelled by ID |
-| `tracking.mp4` | The annotated frames as a video (with `--video`) |
+- `results.txt`: one box per line as `frame,id,x,y,w,h,score,1,-1,-1,-1` (MOTChallenge format)
+- `frames/`: frames with each tracked cluster boxed and labelled by ID
+- `tracking.mp4`: the same frames as a video (only with `--video`)
 
-It runs on CPU or GPU; a GPU is picked automatically when available.
+To run on your own data, export the video as numbered frames and pass that
+folder instead. Frames are resized and padded to 1024 × 512, the input size used
+in training. The main options are `--conf-thres` (default 0.3), `--frame-rate`
+(default 100, which sets how long a lost track is kept) and `--device`. See
+`defecttrack --help` for the rest. The code runs on CPU or GPU.
 
-## Using your own video
-
-Export the video as numbered frames into a folder, then point DefectTrack at it:
-
-```bash
-defecttrack path/to/my_video/images -o results
-```
-
-Several folders can be passed at once. Frames are resized and padded to
-1024 x 512, the size the model was trained on.
-
-Useful options (see `defecttrack --help` for all):
-
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `--weights` | `weights/best.pth` | Checkpoint to load |
-| `--conf-thres` | 0.3 | Detection confidence needed to start or keep a track |
-| `--min-box-area` | 100 | Ignore boxes smaller than this (pixels²) |
-| `--max-aspect-ratio` | 1.6 | Ignore boxes much wider than they are tall |
-| `--frame-rate` | 100 | Video frame rate; controls how long a lost track is remembered |
-| `--device` | auto | `cpu`, `cuda` or `cuda:N` |
-
-### From Python
+The tracker can also be called from Python:
 
 ```python
 from defecttrack.config import TrackerConfig
 from defecttrack.tracking import track_sequence
 
-cfg = TrackerConfig(load_model="weights/best.pth", conf_thres=0.3)
-results = track_sequence(cfg, "data/video_sample/images", "results/video_sample")
+cfg = TrackerConfig(load_model="weights/best.pth")
+track_sequence(cfg, "data/video_sample/images", "results/video_sample")
 ```
 
-## Docker
+A Dockerfile is included as well:
 
 ```bash
 docker build -t defecttrack .
-docker run --rm -v "$PWD/results:/results" defecttrack            # sample video
-docker run --rm -v "$PWD/my_video:/data" -v "$PWD/results:/results" \
-    defecttrack /data --output /results                              # your frames
+docker run --rm -v "$PWD/results:/results" defecttrack
 ```
 
-## Project layout
+## Repository layout
 
 ```
-defecttrack/
-  cli.py          command-line interface
-  config.py       all settings, with the published defaults
-  tracking.py     runs the tracker over a sequence and saves results
-  data.py         frame loading and letterbox resizing
-  models/         HRNet backbone, output decoding, checkpoint loading
-  tracker/        Kalman filter, association (IoU + embedding), track state
-  utils/          box post-processing and drawing
-data/video_sample/  10-frame sample sequence
-scripts/            weight download helper
-tests/              quick tests (no weights needed)
+defecttrack/   package: model, tracker, data loading, CLI
+data/          10-frame sample sequence
+scripts/       weight download
+tests/         quick tests (no weights needed): pytest -q
 ```
 
-## Tests
-
-```bash
-pip install -e ".[dev]"
-pytest -q
-```
-
-## Training
-
-This repository contains the inference code and the released model. Training
-follows the [FairMOT](https://github.com/ifzhang/FairMOT) procedure with an
-HRNet-18 backbone, as described in the paper.
+This repository covers inference. Training followed the
+[FairMOT](https://github.com/ifzhang/FairMOT) recipe with an HRNet-18 backbone;
+details are in the paper.
 
 ## Acknowledgements
 
-Built on [FairMOT](https://github.com/ifzhang/FairMOT) and
-[HRNet](https://github.com/HRNet/HRNet-Human-Pose-Estimation) (both MIT licensed).
+The detector and association code build on
+[FairMOT](https://github.com/ifzhang/FairMOT) and
+[HRNet](https://github.com/HRNet/HRNet-Human-Pose-Estimation).
 
 ## Citation
 
@@ -114,7 +101,8 @@ Built on [FairMOT](https://github.com/ifzhang/FairMOT) and
 @article{sainju2022defecttrack,
   title   = {DefectTrack: a deep learning-based multi-object tracking algorithm
              for quantitative defect analysis of in-situ TEM videos in real-time},
-  author  = {Sainju, Rajat and others},
+  author  = {Sainju, Rajat and Chen, Wei-Ying and Schaefer, Samuel and Yang, Qian
+             and Ding, Caiwen and Li, Meimei and Zhu, Yuanyuan},
   journal = {Scientific Reports},
   volume  = {12},
   pages   = {15705},
@@ -122,3 +110,6 @@ Built on [FairMOT](https://github.com/ifzhang/FairMOT) and
   doi     = {10.1038/s41598-022-19697-1}
 }
 ```
+
+Figures are reproduced from the paper, which is published open access under
+CC BY 4.0.
