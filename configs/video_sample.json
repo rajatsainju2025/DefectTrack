@@ -1,7 +1,0 @@
-{
-    "root":"./data",
-    "predict":
-    {
-        "video_sample":"./data/video_sample.test"
-    }
-}

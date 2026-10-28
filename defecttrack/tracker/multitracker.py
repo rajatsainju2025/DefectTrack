@@ -73,7 +73,6 @@ class STrack(BaseTrack):
         self.state = TrackState.Tracked
         if frame_id == 1:
             self.is_activated = True
-        #self.is_activated = True
         self.frame_id = frame_id
         self.start_frame = frame_id
 
@@ -167,13 +166,13 @@ class STrack(BaseTrack):
 
 
 class JDETracker(object):
-    def __init__(self, opt, frame_rate=30, model=''):
+    def __init__(self, opt, frame_rate=30, model=None):
         self.opt = opt
         if not hasattr(opt, 'device'):
             opt.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         logger.info('Creating model...')
-        if model == '':
+        if model is None:
             self.model = create_model(opt.arch, opt.heads, opt.head_conv)
             self.model = load_model(self.model, opt.load_model)
         else:
@@ -261,18 +260,6 @@ class JDETracker(object):
         dets = dets[remain_inds]
         id_feature = id_feature[remain_inds]
 
-        # vis
-        '''
-        for i in range(0, dets.shape[0]):
-            bbox = dets[i][0:4]
-            cv2.rectangle(img0, (bbox[0], bbox[1]),
-                          (bbox[2], bbox[3]),
-                          (0, 255, 0), 2)
-        cv2.imshow('dets', img0)
-        cv2.waitKey(0)
-        id0 = id0-1
-        '''
-
         if len(dets) > 0:
             '''Detections'''
             detections = [STrack(STrack.tlbr_to_tlwh(tlbrs[:4]), tlbrs[4], f, 30) for
@@ -291,12 +278,9 @@ class JDETracker(object):
 
         ''' Step 2: First association, with embedding'''
         strack_pool = joint_stracks(tracked_stracks, self.lost_stracks)
-        # Predict the current location with KF
-        #for strack in strack_pool:
-            #strack.predict()
+        # Predict the current location with the Kalman filter
         STrack.multi_predict(strack_pool)
         dists = matching.embedding_distance(strack_pool, detections)
-        #dists = matching.gate_cost_matrix(self.kalman_filter, dists, strack_pool, detections)
         dists = matching.fuse_motion(self.kalman_filter, dists, strack_pool, detections)
         matches, u_track, u_detection = matching.linear_assignment(dists, thresh=0.7) #default = 0.7
 
