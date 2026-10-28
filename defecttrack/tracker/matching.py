@@ -1,7 +1,6 @@
 import lap
 import numpy as np
 import scipy
-from cython_bbox import bbox_overlaps as bbox_ious
 from scipy.spatial.distance import cdist
 from . import kalman_filter
 
@@ -56,16 +55,28 @@ def ious(atlbrs, btlbrs):
 
     :rtype ious np.ndarray
     """
-    ious = np.zeros((len(atlbrs), len(btlbrs)), dtype=np.float)
-    if ious.size == 0:
-        return ious
+    if len(atlbrs) == 0 or len(btlbrs) == 0:
+        return np.zeros((len(atlbrs), len(btlbrs)), dtype=np.float64)
+    return bbox_ious(np.asarray(atlbrs, dtype=np.float64),
+                     np.asarray(btlbrs, dtype=np.float64))
 
-    ious = bbox_ious(
-        np.ascontiguousarray(atlbrs, dtype=np.float),
-        np.ascontiguousarray(btlbrs, dtype=np.float)
-    )
 
-    return ious
+def bbox_ious(boxes, query_boxes):
+    """Pairwise IoU of (N, 4) and (K, 4) boxes in (x1, y1, x2, y2) format.
+
+    Pure-NumPy replacement for ``cython_bbox.bbox_overlaps`` with the same
+    pixel-inclusive (+1) convention, so results match the original code.
+    """
+    area_a = (boxes[:, 2] - boxes[:, 0] + 1) * (boxes[:, 3] - boxes[:, 1] + 1)
+    area_b = (query_boxes[:, 2] - query_boxes[:, 0] + 1) * (query_boxes[:, 3] - query_boxes[:, 1] + 1)
+
+    iw = (np.minimum(boxes[:, None, 2], query_boxes[None, :, 2])
+          - np.maximum(boxes[:, None, 0], query_boxes[None, :, 0]) + 1)
+    ih = (np.minimum(boxes[:, None, 3], query_boxes[None, :, 3])
+          - np.maximum(boxes[:, None, 1], query_boxes[None, :, 1]) + 1)
+    inter = np.clip(iw, 0, None) * np.clip(ih, 0, None)
+    union = area_a[:, None] + area_b[None, :] - inter
+    return np.where(inter > 0, inter / union, 0.0)
 
 
 def iou_distance(atracks, btracks):
@@ -96,13 +107,13 @@ def embedding_distance(tracks, detections, metric='cosine'):
     :return: cost_matrix np.ndarray
     """
 
-    cost_matrix = np.zeros((len(tracks), len(detections)), dtype=np.float)
+    cost_matrix = np.zeros((len(tracks), len(detections)), dtype=np.float64)
     if cost_matrix.size == 0:
         return cost_matrix
-    det_features = np.asarray([track.curr_feat for track in detections], dtype=np.float)
+    det_features = np.asarray([track.curr_feat for track in detections], dtype=np.float64)
     #for i, track in enumerate(tracks):
         #cost_matrix[i, :] = np.maximum(0.0, cdist(track.smooth_feat.reshape(1,-1), det_features, metric))
-    track_features = np.asarray([track.smooth_feat for track in tracks], dtype=np.float)
+    track_features = np.asarray([track.smooth_feat for track in tracks], dtype=np.float64)
     cost_matrix = np.maximum(0.0, cdist(track_features, det_features, metric))  # Nomalized features
     return cost_matrix
 

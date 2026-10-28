@@ -21,7 +21,7 @@ class STrack(BaseTrack):
     def __init__(self, tlwh, score, temp_feat, buffer_size=30):
 
         # wait activate
-        self._tlwh = np.asarray(tlwh, dtype=np.float)
+        self._tlwh = np.asarray(tlwh, dtype=np.float64)
         self.kalman_filter = None
         self.mean, self.covariance = None, None
         self.is_activated = False
@@ -169,12 +169,10 @@ class STrack(BaseTrack):
 class JDETracker(object):
     def __init__(self, opt, frame_rate=30, model=''):
         self.opt = opt
-        if opt.gpus[0] >= 0:
-            opt.device = torch.device('cuda')
-        else:
-            opt.device = torch.device('cpu')
-            
-        print('Creating model...')
+        if not hasattr(opt, 'device'):
+            opt.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        logger.info('Creating model...')
         if model == '':
             self.model = create_model(opt.arch, opt.heads, opt.head_conv)
             self.model = load_model(self.model, opt.load_model)
@@ -358,8 +356,6 @@ class JDETracker(object):
             if self.frame_id - track.end_frame > self.max_time_lost:
                 track.mark_removed()
                 removed_stracks.append(track)
-
-        # print('Ramained match {} s'.format(t4-t3))
 
         self.tracked_stracks = [t for t in self.tracked_stracks if t.state == TrackState.Tracked]
         self.tracked_stracks = joint_stracks(self.tracked_stracks, activated_starcks)

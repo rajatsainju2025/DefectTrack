@@ -62,7 +62,7 @@ def eval_seq(opt, dataloader, data_type, result_filename, save_dir=None, show_im
     for path, img, img0 in dataloader:
 
         # run tracking
-        blob = torch.from_numpy(img).cuda().unsqueeze(0)
+        blob = torch.from_numpy(img).to(opt.device).unsqueeze(0)
         online_targets = tracker.update(blob, img0)
         online_tlwhs = []
         online_ids = []
