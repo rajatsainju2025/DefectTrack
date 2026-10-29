@@ -1,269 +1,98 @@
-# vim: expandtab:ts=4:sw=4
+"""Constant-velocity Kalman filter for bounding boxes.
+
+Independent implementation of the standard linear Kalman filter used by
+SORT-style trackers. The state is
+
+    x = [cx, cy, a, h, vcx, vcy, va, vh]
+
+where (cx, cy) is the box centre, a = w / h its aspect ratio and h its height;
+the last four entries are their velocities. Measurements are (cx, cy, a, h).
+Process and measurement noise scale with the box height, so small and large
+boxes are tracked with comparable relative uncertainty.
+"""
+
 import numpy as np
 import scipy.linalg
 
-"""
-Table for the 0.95 quantile of the chi-square distribution with N degrees of
-freedom (contains values for N=1, ..., 9). Taken from MATLAB/Octave's chi2inv
-function and used as Mahalanobis gating threshold.
-"""
-chi2inv95 = {
-    1: 3.8415,
-    2: 5.9915,
-    3: 7.8147,
-    4: 9.4877,
-    5: 11.070,
-    6: 12.592,
-    7: 14.067,
-    8: 15.507,
-    9: 16.919}
+# 95% quantile of the chi-square distribution with N degrees of freedom,
+# used as the gate for squared Mahalanobis distances.
+chi2inv95 = {1: 3.8415, 2: 5.9915, 3: 7.8147, 4: 9.4877, 5: 11.070,
+             6: 12.592, 7: 14.067, 8: 15.507, 9: 16.919}
+
+_NDIM = 4
+POS_WEIGHT = 1.0 / 20   # position noise, relative to box height
+VEL_WEIGHT = 1.0 / 160  # velocity noise, relative to box height
 
 
-class KalmanFilter(object):
-    """
-    A simple Kalman filter for tracking bounding boxes in image space.
+def _noise_std(h, pos_scale, vel_scale, aspect_pos, aspect_vel):
+    """Per-state standard deviations for box height(s) ``h``."""
+    p, v = pos_scale * POS_WEIGHT * h, vel_scale * VEL_WEIGHT * h
+    ones = np.ones_like(h)
+    return np.stack([p, p, aspect_pos * ones, p, v, v, aspect_vel * ones, v], axis=-1)
 
-    The 8-dimensional state space
 
-        x, y, a, h, vx, vy, va, vh
-
-    contains the bounding box center position (x, y), aspect ratio a, height h,
-    and their respective velocities.
-
-    Object motion follows a constant velocity model. The bounding box location
-    (x, y, a, h) is taken as direct observation of the state space (linear
-    observation model).
-
-    """
-
-    def __init__(self):
-        ndim, dt = 4, 1.
-
-        # Create Kalman filter model matrices.
-        self._motion_mat = np.eye(2 * ndim, 2 * ndim)
-        for i in range(ndim):
-            self._motion_mat[i, ndim + i] = dt
-        self._update_mat = np.eye(ndim, 2 * ndim)
-
-        # Motion and observation uncertainty are chosen relative to the current
-        # state estimate. These weights control the amount of uncertainty in
-        # the model. This is a bit hacky.
-        self._std_weight_position = 1. / 20
-        self._std_weight_velocity = 1. / 160
+class KalmanFilter:
+    def __init__(self, dt=1.0):
+        # x_{k+1} = F x_k : position += velocity * dt
+        self.F = np.eye(2 * _NDIM)
+        self.F[:_NDIM, _NDIM:] = dt * np.eye(_NDIM)
+        # z = H x : we observe the position part of the state
+        self.H = np.eye(_NDIM, 2 * _NDIM)
 
     def initiate(self, measurement):
-        """Create track from unassociated measurement.
-
-        Parameters
-        ----------
-        measurement : ndarray
-            Bounding box coordinates (x, y, a, h) with center position (x, y),
-            aspect ratio a, and height h.
-
-        Returns
-        -------
-        (ndarray, ndarray)
-            Returns the mean vector (8 dimensional) and covariance matrix (8x8
-            dimensional) of the new track. Unobserved velocities are initialized
-            to 0 mean.
-
-        """
-        mean_pos = measurement
-        mean_vel = np.zeros_like(mean_pos)
-        mean = np.r_[mean_pos, mean_vel]
-
-        std = [
-            2 * self._std_weight_position * measurement[3],
-            2 * self._std_weight_position * measurement[3],
-            1e-2,
-            2 * self._std_weight_position * measurement[3],
-            10 * self._std_weight_velocity * measurement[3],
-            10 * self._std_weight_velocity * measurement[3],
-            1e-5,
-            10 * self._std_weight_velocity * measurement[3]]
-        covariance = np.diag(np.square(std))
-        return mean, covariance
+        """Start a track from one (cx, cy, a, h) measurement, at zero velocity."""
+        measurement = np.asarray(measurement, dtype=float)
+        mean = np.concatenate([measurement, np.zeros(_NDIM)])
+        std = _noise_std(measurement[3], 2, 10, 1e-2, 1e-5)
+        return mean, np.diag(std ** 2)
 
     def predict(self, mean, covariance):
-        """Run Kalman filter prediction step.
+        """Propagate one track forward by one time step."""
+        mean, covariance = self.multi_predict(mean[None], covariance[None])
+        return mean[0], covariance[0]
 
-        Parameters
-        ----------
-        mean : ndarray
-            The 8 dimensional mean vector of the object state at the previous
-            time step.
-        covariance : ndarray
-            The 8x8 dimensional covariance matrix of the object state at the
-            previous time step.
-
-        Returns
-        -------
-        (ndarray, ndarray)
-            Returns the mean vector and covariance matrix of the predicted
-            state. Unobserved velocities are initialized to 0 mean.
-
-        """
-        std_pos = [
-            self._std_weight_position * mean[3],
-            self._std_weight_position * mean[3],
-            1e-2,
-            self._std_weight_position * mean[3]]
-        std_vel = [
-            self._std_weight_velocity * mean[3],
-            self._std_weight_velocity * mean[3],
-            1e-5,
-            self._std_weight_velocity * mean[3]]
-        motion_cov = np.diag(np.square(np.r_[std_pos, std_vel]))
-
-        #mean = np.dot(self._motion_mat, mean)
-        mean = np.dot(mean, self._motion_mat.T)
-        covariance = np.linalg.multi_dot((
-            self._motion_mat, covariance, self._motion_mat.T)) + motion_cov
-
+    def multi_predict(self, mean, covariance):
+        """Propagate N tracks at once. ``mean`` is (N, 8), ``covariance`` (N, 8, 8)."""
+        std = _noise_std(mean[:, 3], 1, 1, 1e-2, 1e-5)
+        Q = np.einsum("ni,ij->nij", std ** 2, np.eye(2 * _NDIM))
+        mean = mean @ self.F.T
+        covariance = self.F @ covariance @ self.F.T + Q
         return mean, covariance
 
     def project(self, mean, covariance):
-        """Project state distribution to measurement space.
-
-        Parameters
-        ----------
-        mean : ndarray
-            The state's mean vector (8 dimensional array).
-        covariance : ndarray
-            The state's covariance matrix (8x8 dimensional).
-
-        Returns
-        -------
-        (ndarray, ndarray)
-            Returns the projected mean and covariance matrix of the given state
-            estimate.
-
-        """
-        std = [
-            self._std_weight_position * mean[3],
-            self._std_weight_position * mean[3],
-            1e-1,
-            self._std_weight_position * mean[3]]
-        innovation_cov = np.diag(np.square(std))
-
-        mean = np.dot(self._update_mat, mean)
-        covariance = np.linalg.multi_dot((
-            self._update_mat, covariance, self._update_mat.T))
-        return mean, covariance + innovation_cov
-
-    def multi_predict(self, mean, covariance):
-        """Run Kalman filter prediction step (Vectorized version).
-        Parameters
-        ----------
-        mean : ndarray
-            The Nx8 dimensional mean matrix of the object states at the previous
-            time step.
-        covariance : ndarray
-            The Nx8x8 dimensional covariance matrics of the object states at the
-            previous time step.
-        Returns
-        -------
-        (ndarray, ndarray)
-            Returns the mean vector and covariance matrix of the predicted
-            state. Unobserved velocities are initialized to 0 mean.
-        """
-        std_pos = [
-            self._std_weight_position * mean[:, 3],
-            self._std_weight_position * mean[:, 3],
-            1e-2 * np.ones_like(mean[:, 3]),
-            self._std_weight_position * mean[:, 3]]
-        std_vel = [
-            self._std_weight_velocity * mean[:, 3],
-            self._std_weight_velocity * mean[:, 3],
-            1e-5 * np.ones_like(mean[:, 3]),
-            self._std_weight_velocity * mean[:, 3]]
-        sqr = np.square(np.r_[std_pos, std_vel]).T
-
-        motion_cov = []
-        for i in range(len(mean)):
-            motion_cov.append(np.diag(sqr[i]))
-        motion_cov = np.asarray(motion_cov)
-
-        mean = np.dot(mean, self._motion_mat.T)
-        left = np.dot(self._motion_mat, covariance).transpose((1, 0, 2))
-        covariance = np.dot(left, self._motion_mat.T) + motion_cov
-
-        return mean, covariance
+        """Map a state to measurement space, adding measurement noise R."""
+        std = POS_WEIGHT * mean[3] * np.ones(_NDIM)
+        std[2] = 1e-1
+        R = np.diag(std ** 2)
+        return self.H @ mean, self.H @ covariance @ self.H.T + R
 
     def update(self, mean, covariance, measurement):
-        """Run Kalman filter correction step.
-
-        Parameters
-        ----------
-        mean : ndarray
-            The predicted state's mean vector (8 dimensional).
-        covariance : ndarray
-            The state's covariance matrix (8x8 dimensional).
-        measurement : ndarray
-            The 4 dimensional measurement vector (x, y, a, h), where (x, y)
-            is the center position, a the aspect ratio, and h the height of the
-            bounding box.
-
-        Returns
-        -------
-        (ndarray, ndarray)
-            Returns the measurement-corrected state distribution.
-
-        """
-        projected_mean, projected_cov = self.project(mean, covariance)
-
-        chol_factor, lower = scipy.linalg.cho_factor(
-            projected_cov, lower=True, check_finite=False)
-        kalman_gain = scipy.linalg.cho_solve(
-            (chol_factor, lower), np.dot(covariance, self._update_mat.T).T,
-            check_finite=False).T
-        innovation = measurement - projected_mean
-
-        new_mean = mean + np.dot(innovation, kalman_gain.T)
-        new_covariance = covariance - np.linalg.multi_dot((
-            kalman_gain, projected_cov, kalman_gain.T))
+        """Correct a predicted state with a new measurement."""
+        z_mean, S = self.project(mean, covariance)
+        cho = scipy.linalg.cho_factor(S, lower=True, check_finite=False)
+        # Kalman gain K = P H^T S^-1, computed by solving S K^T = H P^T
+        K = scipy.linalg.cho_solve(cho, (covariance @ self.H.T).T, check_finite=False).T
+        new_mean = mean + (measurement - z_mean) @ K.T
+        new_covariance = covariance - K @ S @ K.T
         return new_mean, new_covariance
 
     def gating_distance(self, mean, covariance, measurements,
-                        only_position=False, metric='maha'):
-        """Compute gating distance between state distribution and measurements.
-        A suitable distance threshold can be obtained from `chi2inv95`. If
-        `only_position` is False, the chi-square distribution has 4 degrees of
-        freedom, otherwise 2.
-        Parameters
-        ----------
-        mean : ndarray
-            Mean vector over the state distribution (8 dimensional).
-        covariance : ndarray
-            Covariance of the state distribution (8x8 dimensional).
-        measurements : ndarray
-            An Nx4 dimensional matrix of N measurements, each in
-            format (x, y, a, h) where (x, y) is the bounding box center
-            position, a the aspect ratio, and h the height.
-        only_position : Optional[bool]
-            If True, distance computation is done with respect to the bounding
-            box center position only.
-        Returns
-        -------
-        ndarray
-            Returns an array of length N, where the i-th element contains the
-            squared Mahalanobis distance between (mean, covariance) and
-            `measurements[i]`.
-        """
-        mean, covariance = self.project(mean, covariance)
-        if only_position:
-            mean, covariance = mean[:2], covariance[:2, :2]
-            measurements = measurements[:, :2]
+                        only_position=False, metric="maha"):
+        """Distance from the predicted state to each measurement (rows of an (M, 4) array).
 
-        d = measurements - mean
-        if metric == 'gaussian':
+        ``metric="maha"`` returns squared Mahalanobis distances (compare with
+        ``chi2inv95``); ``metric="gaussian"`` returns squared Euclidean ones.
+        """
+        z_mean, S = self.project(mean, covariance)
+        measurements = np.asarray(measurements)
+        if only_position:
+            z_mean, S, measurements = z_mean[:2], S[:2, :2], measurements[:, :2]
+        d = measurements - z_mean
+        if metric == "gaussian":
             return np.sum(d * d, axis=1)
-        elif metric == 'maha':
-            cholesky_factor = np.linalg.cholesky(covariance)
-            z = scipy.linalg.solve_triangular(
-                cholesky_factor, d.T, lower=True, check_finite=False,
-                overwrite_b=True)
-            squared_maha = np.sum(z * z, axis=0)
-            return squared_maha
-        else:
-            raise ValueError('invalid distance metric')
+        if metric == "maha":
+            L = np.linalg.cholesky(S)
+            z = scipy.linalg.solve_triangular(L, d.T, lower=True,
+                                              check_finite=False, overwrite_b=True)
+            return np.sum(z * z, axis=0)
+        raise ValueError(f"Unknown metric: {metric}")

@@ -3,7 +3,7 @@
 Code and pretrained model for **DefectTrack**, a multi-object tracker for defect
 clusters in in-situ irradiation TEM videos.
 
-[Paper](https://doi.org/10.1038/s41598-022-19697-1) | [Citation](#citation) | [Related: DefectSegNet](https://github.com/rajatsainju2025/DefectSegNet)
+[Paper](https://doi.org/10.1038/s41598-022-19697-1) | [Model and data (figshare)](https://figshare.com/s/9e7f6c0870e828dbc1a2) | [Citation](#citation) | [Related: DefectSegNet](https://github.com/rajatsainju2025/DefectSegNet)
 
 <p align="center">
   <img src="assets/tracking_results.jpg" width="85%">
@@ -42,7 +42,7 @@ backbone, (d) detection branch, (e) tracking module. Fig. 3 in the paper.*
 git clone https://github.com/rajatsainju2025/DefectTrack.git
 cd DefectTrack
 pip install .
-python scripts/download_weights.py      # -> weights/best.pth
+python scripts/download_weights.py      # model from figshare -> weights/best.pth
 
 defecttrack data/video_sample/images --video
 ```
@@ -75,6 +75,17 @@ A Dockerfile is included as well:
 docker build -t defecttrack .
 docker run --rm -v "$PWD/results:/results" defecttrack
 ```
+
+## Model and data
+
+The pretrained model and the training data are on figshare:
+
+- [DefectTrack_model.zip](https://figshare.com/s/9e7f6c0870e828dbc1a2?file=35106460)
+  (84 MB): the checkpoint (`best.pth`). `scripts/download_weights.py`
+  fetches it and extracts the checkpoint for you.
+- [DefectTrack_TrainingData.zip](https://figshare.com/s/9e7f6c0870e828dbc1a2?file=35106187)
+  (4.2 GB): the in-situ TEM video frames used for training, with ground-truth
+  tracks (`gt.txt`) and the VIA annotation file.
 
 ## Repository layout
 
@@ -111,5 +122,7 @@ The detector and association code build on
 }
 ```
 
-Figures are reproduced from the paper, which is published open access under
-CC BY 4.0.
+## License
+
+The code is released under the MIT license; see [LICENSE](LICENSE). Figures are
+reproduced from the paper, which is published open access under CC BY 4.0.
